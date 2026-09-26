@@ -29,6 +29,14 @@ Note: this is the failure mode where a passing test is worse than a failing one.
 _Installed, reset the database, read the documents, ran the suites against the untouched skeleton.
 What did the starting line actually look like, and which failure surprised you?_
 
+## 2026-09-26
+Installation done, database reset done , read the documents, ran the server it says to move further we have to implement the folllowing in this order
+
+server/auth.js -> server/context.js -> server/permissions.js
+
+run : node scripts/check-jwt.js
+FAIL have to implement verfiyAccessToken()
+
 ## Phase 1 — token verification
 
 _What did you expect each failure mode to look like before you ran it? Which one behaved
