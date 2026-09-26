@@ -84,6 +84,29 @@ Cause: called `forbidden(...)` in `assertCan` / `assertCanStartSession` without
 `import { forbidden } from './http.js'` → `ReferenceError`, no `.reason`.
 Fixed: added import; re-ran `node scripts/check-permissions.js` → `ALL PASS — 35 passed, 0 failed`.
 
+## 2026-09-26 · Phase 2 — context.js (caller, not permissions)
+
+Read `WORKFLOW.md`: Phase 2 is not only `check-permissions.js` — authenticated requests need
+`authenticate()` in `server/context.js`.
+
+Implemented: Bearer extract, `verifyAccessToken`, membership join with `org_deleted_at`, path
+`params.org` vs token org → `notFound()`, return `{ userId, orgId, role, membership, claims }`.
+
+Wrong assumption: JWT payload fields are `userId` / `orgId` because `issueAccessToken` takes
+those names in its argument object.
+Observed: tokens encode `sub` and `org` (`server/auth.js` `issueAccessToken`). Lookup used
+undefined keys → "not a member" / broken caller before any route ran.
+Changed: use `claims.sub` and `claims.org` for DB lookup and `ctx` fields (still fixing in code).
+
+Second mistake: treated every non-`active` status as 401 before `assertFresh`.
+Observed: q1 `context.js` skips `assertFresh` only for `suspended` so API can return 403
+`suspended` from `permissions.resolve`, not 401 `TOKEN_STALE` after a suspension bump.
+Changed plan: allow `suspended` through authenticate; call `assertFresh` only when
+`status !== 'suspended'` (`AUTH-DATA-MODEL.md` / q1 comment).
+
+Not done yet: `routes/auth.js` empty, `check-api.js` not green. Next commit target after context
+fix: login + `POST /auth/token`.
+
 
 ## Phase 3 — orgs, members, invites
 
