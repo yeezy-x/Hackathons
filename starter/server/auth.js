@@ -73,12 +73,35 @@ export function issueAccessToken({ userId, orgId, role, permVersion }, secret) {
 export function verifyAccessToken(token, secret) {
   // YOURS TO WRITE. Every failure mode listed above must be a 401 UNAUTHENTICATED.
   // `node scripts/check-jwt.js` is the public suite for this function.
-  throw Object.assign(
-    new Error('TODO: server/auth.js — verifyAccessToken() is yours to write (AUTH-DATA-MODEL.md §10).'),
-    { code: 'NOT_IMPLEMENTED' }
-  );
+  const reject=()=>{
+    throw unauthenticated('not authenticated')
+  }
+  if(typeof token !=='string') reject()
+  const parts=token.split(".")
+  if(parts.length!==3 || parts.some((part)=>part.length===0)) reject();
+  const [h,p,s]=parts;
+  let header;
+  let payload;
+  try{
+    header=JSON.parse(unb64(h).toString('utf-8'));
+    payload=JSON.parse(unb64(p).toString('utf-8'));
+  }catch{
+    reject();
+  }
+  if(header.alg!==ALG || header.typ!=='JWT') reject();
+  const expected=createHmac('sha256',secret).update(`${h}.${p}`).digest();
+  let actual;
+  try{
+    actual=unb64(s);
+  }catch{
+    reject();
+  }
+  if(actual.length!==expected.length || !timingSafeEqual(actual,expected)) reject();
+  if(typeof payload.exp !=='number' || payload.exp<=Date.now()/1000) reject();
+  if(payload.iss!==ISS || payload.aud!==AUD) reject();
+  if(!payload.jti) reject();
+  return payload;
 }
-
 
 // The freshness check (AUTH-DATA-MODEL.md §3). Compares the token's pv against the
 // membership's current perm_version. Note `!==`, not `<`: a token from the future is

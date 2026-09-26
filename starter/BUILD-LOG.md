@@ -42,6 +42,10 @@ FAIL have to implement verfiyAccessToken()
 _What did you expect each failure mode to look like before you ran it? Which one behaved
 differently from your expectation, and what did that tell you?_
 
+## 2026-09-26 Phase 1 - Token Verification
+So after running it , I got 43 fails. It fails on every valid token cases . It wants Http Error:401 Unauthenticated
+Changed: implemented the function . Reject 'alg' other than HS256 before checking the signature. Compare the signature with `timingSafeEqual` only after the lengths match — a truncated signature makes that function throw, which the suite reports as a crash rather than `401 UNAUTHENTICATED`. Treat `exp <= now` as expired, including the exact current second.
+
 ## Phase 2 — caller context and the resolution engine
 
 _This is where most people's first model is wrong. Write down the model you started with, the
