@@ -51,6 +51,40 @@ Changed: implemented the function . Reject 'alg' other than HS256 before checkin
 _This is where most people's first model is wrong. Write down the model you started with, the
 observation that broke it, and the model you moved to. Be specific about the observation._
 
+## 2026-09-26 · Phase 2 — permissions.js (first pass)
+
+Ran `node scripts/check-permissions.js` after stub: everything threw `NOT_IMPLEMENTED`.
+Implemented `resolve` by reading `role_permissions` + `grants`.
+Model I used first: collect allows, then denies override only on the same device.
+Predicted: org-wide deny `device:terminal` + device-scoped allow on `lab-win-01` would allow
+terminal on that one machine.
+Observed: test `device-scoped ALLOW does NOT carve out org-wide DENY` failed — still `deny`.
+
+Changed: D1 means evaluate **deny grants first** and never let a device allow undo an org deny;
+`buildPermissions` checks `denied.has(key)` before `allowed.has(key)` when emitting the catalogue.
+
+Re-ran: discriminating case + Sam terminal cases passed.
+
+## 2026-09-26 · Phase 2 — org-level vs device-level grants
+
+Observation: viewer `session:start` on `lab-mac-01` only (seed grant) — org-level behaviour wasn't
+the failing test, but device-scoped allow on one row required `collectGrants` with `deviceId === null`
+to return **all** grants (no `device_id` filter), and per-device resolve to filter
+`(device_id IS NULL OR device_id = ?)`.
+`resolveDevices` loads all grants once, filters per row in memory — avoids N+1 from calling
+`resolve()` per device (README warning).
+
+## 2026-09-26 · Phase 2 — assertCan / sessions (bug, not algorithm)
+
+Resolution looked done: 33 passed, 2 failed — both under `§9 — compound session check`.
+Expected: `assertCanStartSession` throws with `e.reason` `missing_device_permission` /
+`missing_permission`.
+Observed: `got undefined` — success path worked; failure path did not.
+Cause: called `forbidden(...)` in `assertCan` / `assertCanStartSession` without
+`import { forbidden } from './http.js'` → `ReferenceError`, no `.reason`.
+Fixed: added import; re-ran `node scripts/check-permissions.js` → `ALL PASS — 35 passed, 0 failed`.
+
+
 ## Phase 3 — orgs, members, invites
 
 _Anything you had to work out that no document states. Invite lifecycle states are a common
