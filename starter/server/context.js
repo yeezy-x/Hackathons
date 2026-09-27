@@ -19,11 +19,6 @@
 import {unauthenticated} from './http.js'
 import {assertFresh, verifyAccessToken} from './auth.js'
 import {notFound} from './http.js'
-const todo = () =>
-  Object.assign(
-    new Error('TODO: server/context.js — authenticate() is yours to write (BRIEF.md §3).'),
-    { code: 'NOT_IMPLEMENTED' }
-  );
 
 export function membershipOf(db,orgId,userId){
   return db.prepare(`SELECT m.*, o.deleted_at AS org_deleted_at
@@ -35,18 +30,17 @@ export function membershipOf(db,orgId,userId){
 export function authenticate(db, secret) {
   return function buildContext(req, params) {
     const header = req.headers.authorization ?? '';
-    const raw = header.startsWith('Bearer ') ? header.slice(7) : null;
-    if (!raw) throw unauthenticated('missing bearer token');
-    const payload = verifyAccessToken(raw, secret);
-    const orgId=payload.orgId;
-    const userId=payload.userId;
+    const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+    if (!token) throw unauthenticated('missing bearer token');
+    const claims = verifyAccessToken(token, secret);
+    const orgId=claims.org;
+    const userId=claims.sub;
     const membership=membershipOf(db,orgId,userId);
     if(!membership) throw unauthenticated('not a member');
     if(membership.org_deleted_at) throw notFound();
     if(membership.status === 'removed') throw unauthenticated('membership removed');
-    if(membership.status!=='active') throw unauthenticated('inactive membership');
-    if (membership.status !== 'suspended') assertFresh(payload, membership);
+    if (membership.status !== 'suspended') assertFresh(claims, membership);
     if(params.org && params.org !== payload.org) throw notFound();
-    return {userId,orgId,role:membership.role,membership,claims:payload};
+    return {userId,orgId,role:membership.role,membership,claims};
   };
 }
