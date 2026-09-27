@@ -13,17 +13,50 @@
 // Schema columns: id, org_id (NOT NULL), actor_id, action, target_type, target_id,
 // result ('allow'|'deny'), reason_code, request_id, at.
 
+import { newId, nowIso } from "./db.js";
+
 const todo = (name) =>
   Object.assign(
     new Error(`TODO: server/audit.js — ${name}() is yours to write (BRIEF.md §3).`),
     { code: 'NOT_IMPLEMENTED' }
   );
 
-export function audit(db, { orgId, actorId, action, targetType, targetId, result, reasonCode, requestId }) {
-  throw todo('audit');
-}
+  export function audit(db, {
+    orgId,
+    actorId = null,
+    action,
+    targetType = null,
+    targetId = null,
+    result,
+    reasonCode = null,
+    requestId = null,
+  }) {
+    db.prepare(
+      `INSERT INTO audit_events
+         (id, org_id, actor_id, action, target_type, target_id, result, reason_code, request_id, at)
+       VALUES (?,?,?,?,?,?,?,?,?,?)`
+    ).run(
+      newId('aud'), orgId, actorId, action, targetType, targetId,
+      result, reasonCode, requestId, nowIso()
+    );
+  }
+  
 
 // Run fn(); if it refuses with a permission error, record the denial before rethrowing.
 export function auditDenials(db, ctx, meta, fn) {
-  throw todo('auditDenials');
+  try {
+    return fn();
+  } catch (err) {
+    if (err?.code === 'FORBIDDEN') {
+      audit(db, {
+        orgId: ctx.orgId,
+        actorId: ctx.userId,
+        result: 'deny',
+        reasonCode: err.reason ?? 'missing_permission',
+        requestId: ctx.requestId,
+        ...meta,
+      });
+    }
+    throw err;
+  }
 }

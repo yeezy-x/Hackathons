@@ -40,7 +40,7 @@ export function authenticate(db, secret) {
     if(membership.org_deleted_at) throw notFound();
     if(membership.status === 'removed') throw unauthenticated('membership removed');
     if (membership.status !== 'suspended') assertFresh(claims, membership);
-    if(params.org && params.org !== payload.org) throw notFound();
+    if(params.org && params.org !== claims.org) throw notFound();
     return {userId,orgId,role:membership.role,membership,claims};
   };
 }

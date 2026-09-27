@@ -67,22 +67,10 @@ Re-ran: discriminating case + Sam terminal cases passed.
 
 ## 2026-09-26 · Phase 2 — org-level vs device-level grants
 
-Observation: viewer `session:start` on `lab-mac-01` only (seed grant) — org-level behaviour wasn't
-the failing test, but device-scoped allow on one row required `collectGrants` with `deviceId === null`
-to return **all** grants (no `device_id` filter), and per-device resolve to filter
+Observation: viewer `session:start` on `lab-mac-01` only (seed grant) — org-level behaviour wasn't the failing test, but device-scoped allow on one row required `collectGrants` with `deviceId === null` to return **all** grants (no `device_id` filter), and per-device resolve to filter
 `(device_id IS NULL OR device_id = ?)`.
 `resolveDevices` loads all grants once, filters per row in memory — avoids N+1 from calling
 `resolve()` per device (README warning).
-
-## 2026-09-26 · Phase 2 — assertCan / sessions (bug, not algorithm)
-
-Resolution looked done: 33 passed, 2 failed — both under `§9 — compound session check`.
-Expected: `assertCanStartSession` throws with `e.reason` `missing_device_permission` /
-`missing_permission`.
-Observed: `got undefined` — success path worked; failure path did not.
-Cause: called `forbidden(...)` in `assertCan` / `assertCanStartSession` without
-`import { forbidden } from './http.js'` → `ReferenceError`, no `.reason`.
-Fixed: added import; re-ran `node scripts/check-permissions.js` → `ALL PASS — 35 passed, 0 failed`.
 
 ## 2026-09-26 · Phase 2 — context.js (caller, not permissions)
 
@@ -92,11 +80,9 @@ Read `WORKFLOW.md`: Phase 2 is not only `check-permissions.js` — authenticated
 Implemented: Bearer extract, `verifyAccessToken`, membership join with `org_deleted_at`, path
 `params.org` vs token org → `notFound()`, return `{ userId, orgId, role, membership, claims }`.
 
-Wrong assumption: JWT payload fields are `userId` / `orgId` because `issueAccessToken` takes
-those names in its argument object.
-Observed: tokens encode `sub` and `org` (`server/auth.js` `issueAccessToken`). Lookup used
-undefined keys → "not a member" / broken caller before any route ran.
-Changed: use `claims.sub` and `claims.org` for DB lookup and `ctx` fields (still fixing in code).
+Wrong assumption: JWT payload fields are `userId` / `orgId` because `issueAccessToken` takes those names in its argument object.
+Observed: tokens encode `sub` and `org` (`server/auth.js` `issueAccessToken`). Lookup used undefined keys → "not a member" / broken caller before any route ran.
+Changed: use `claims.sub` and `claims.org` for DB lookup and `ctx` fields.
 
 Second mistake: treated every non-`active` status as 401 before `assertFresh`.
 Observed: q1 `context.js` skips `assertFresh` only for `suspended` so API can return 403
@@ -104,14 +90,24 @@ Observed: q1 `context.js` skips `assertFresh` only for `suspended` so API can re
 Changed plan: allow `suspended` through authenticate; call `assertFresh` only when
 `status !== 'suspended'` (`AUTH-DATA-MODEL.md` / q1 comment).
 
-Not done yet: `routes/auth.js` empty, `check-api.js` not green. Next commit target after context
-fix: login + `POST /auth/token`.
-
 
 ## Phase 3 — orgs, members, invites
 
 _Anything you had to work out that no document states. Invite lifecycle states are a common
 source of this._
+
+## 2026-09-27 Phase 3 - audit(minimal)+auth routes
+Implemented audit() and auditDenials() both. 
+-> `server/routes/auth.js` calls `audit` on successful login and on bad password when
+user + an active membership exist (`org_id` NOT NULL on audit rows).
+-> now auditDenials() run some permission gated code. if it thorws forbidden call audit() with result:deny and rethrow. Successful allows are not logged in here.
+
+## Phase 3- Lifecycle.js
+Ported rank / last-owner / `endActiveSessions` / `snapshotAuthority` / `sessionExpiry` from
+reference so member and session routes do not duplicate PERMISSIONS.md
+Leaned on DB: owner count query for last-owner; session rows updated in place with
+`state='ended'` + `end_reason`.
+
 
 ## Phase 4 — devices and grants
 

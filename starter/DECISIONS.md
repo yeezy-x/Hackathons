@@ -66,113 +66,95 @@ judgement. An unmentioned gap is a gap.
 
 ----
 
-### Explicit deny is checked before allow when emitting the catalogue, with no device carve-out
-
-**What I chose:** In `buildPermissions`, process all deny grants first into a `denied` map, then role baseline + allow grants into `allowed`, then for each catalogue key prefer `denied` over `allowed`.
-
-**Why:** First implementation assumed a device-scoped allow could override an org-wide deny. 
-`node scripts/check-permissions.js` failed on `device-scoped ALLOW does NOT carve out org-wide DENY` (Sam / `device:terminal` on `dev_lab_win_01`). After reordering so deny wins unconditionally (D1), that case and the org-wide Sam terminal cases passed. Logged in `BUILD-LOG.md` Phase 2 first pass.
-
-**What I rejected:** "More specific grant wins" or "device allow after org deny on same device" — both fail the carved-out test and PERMISSIONS.md D1.
-
-**What would change my mind:** A shipped test where org-wide deny + device allow on the same permission returns `allow` on that device. None exists in `check-permissions.js`.
+## Phase 0 — orientation
+### Foreign keys must be ON at connection open, not assumed from schema load
+**What I chose:** Enable `foreign_keys` when opening the DB connection before relying on constraint errors.
+**Why:** README/check behaviour: validation could “pass” while enforcing nothing until pragma was set on open (`BUILD-LOG.md` Phase 0 / README foreign-key story).
+**What I rejected:** Trusting “schema loaded” as proof constraints run.
+**What would change my mind:** A suite that proves enforcement without per-connection pragma (none observed).
+---
+## Phase 1 — token verification (`server/auth.js`)
+### Reject wrong algorithm before verify; compare signatures with length-safe `timingSafeEqual`
+**What I chose:** Allow only `HS256`; compare HMAC with `timingSafeEqual` only when buffer lengths match.
+**Why:** `node scripts/check-jwt.js`: valid-token cases wanted `401 UNAUTHENTICATED`; mismatched-length signatures crashed instead of clean 401 (`BUILD-LOG.md` 2026-09-26 Phase 1).
+**What I rejected:** Calling `timingSafeEqual` on unequal lengths (throws → suite “crash”).
+**What would change my mind:** Checker accepting other algs or unequal-length compare without 401.
+---
+### Treat `exp <= now` as expired (including the current second)
+**What I chose:** Expiry when `exp` is less than or equal to current time.
+**Why:** JWT suite failure modes for expired tokens.
+**What I rejected:** Strict `<` only (would leave “expires this second” ambiguous vs spec).
+**What would change my mind:** `check-jwt.js` case requiring `exp` still valid at `exp === now`.
+---
+## Phase 2 — caller context (`server/context.js`) + resolution (`server/permissions.js`)
+### JWT payload uses `sub` and `org`, not `userId` / `orgId`
+**What I chose:** Map `claims.sub` → user, `claims.org` → org for membership lookup and `ctx`.
+**Why:** `issueAccessToken` encodes `sub`/`org` (`server/auth.js`); using `claims.userId` broke membership → false “not a member”
+**What I rejected:** Renaming token fields in issue without matching verify.
+**What would change my mind:** Tokens that encode different claim names and a green `check-jwt` + API using those names.
+---
+### `suspended` memberships authenticate but skip `assertFresh` until permission resolve
+**What I chose:** After verify, if membership is `suspended`, do not call `assertFresh`; let `permissions.resolve` return 403 `suspended`.
+**Why:** q1/reference pattern: suspension bumps version; stale check would 401 `TOKEN_STALE` instead of 403 `suspended`.
+**What I rejected:** Treating all non-active statuses as 401 at authenticate.
+**What would change my mind:** API tests requiring 401 for suspended callers before resolve.
+---
+### Explicit deny wins over allow with no device carve-out (D1)
+**What I chose:** In `buildPermissions`, apply denies first; for each catalogue key, `denied` beats `allowed`.
+**Why:** `node scripts/check-permissions.js` — `device-scoped ALLOW does NOT carve out org-wide DENY` (Sam / `device:terminal` on `dev_lab_win_01`). First model was “device allow overrides org deny locally”; test still `deny`
+**What I rejected:** “More specific grant wins” or device allow after org deny on same permission/device.
+**What would change my mind:** Shipped test expecting `allow` when org deny + device allow disagree on same permission.
+---
+### Single combiner `buildPermissions` for `resolve` and `resolveDevices`
+**What I chose:** One function for deny/allow/baseline/wildcards; batch device list filters grants in memory.
+**What I rejected:** Separate list vs check logic; per-device `resolve()` in a loop.
+**What would change my mind:** Profiling where combiner cost dominates (would still keep one combiner, change loading only).
+---
+### Catalogue and role baseline loaded from DB at runtime
+**What I chose:** `permissions` table + `role_permissions` for baseline; no hardcoded matrix.
+**Why:** `scripts/check-personalisation.js` adds permissions/roles not in prose (`permissions.js` header).
+**What I rejected:** PERMISSIONS.md table as JS constant.
+**What would change my mind:** Grading only on fixed DB with no overlay (still risky given personalisation script).
+---
+### Grant windows: half-open; `expires_at == now` is inactive (D7)
+**What I chose:** Active if `revoked_at IS NULL`, `starts_at <= at` (or null), `expires_at > at` (or null).
+**Why:** `check-permissions.js` — `expired grant is inert`, `not-yet-started grant is inert`; inclusive end failed until `>` on expiry.
+**What I rejected:** `expires_at === now` still active.
+**What would change my mind:** Tests/schema requiring inclusive expiry end.
+---
+### HTTP denials use `forbidden()` so clients see `error.reason`
+**What I chose:** `assertCan` / `assertMayGrant` / `assertCanStartSession` throw `forbidden(...)` from `http.js`.
+**Why:** 33/35 with `got undefined want "missing_device_permission"`
+**What I rejected:** Plain `Error` without `.reason`.
+**What would change my mind:** Suite reading only `e.code`, not `e.reason`.
+---
+## Phase 3 — orgs, members, invites, audit shape (in progress)
+### Audit successful login and failed password when org context exists
+**What I chose:** `routes/auth.js` calls `audit()` on good login and on bad password when user + active membership exist (`org_id` set on rows).
+**Why:** Minimal audit before full API; matches need for attributable auth events (`BUILD-LOG.md` 2026-09-27).
+**What I rejected:** Auditing only successes (loses denied login trail).
+**What would change my mind:** Spec saying never log failed password attempts.
+---
+### Lifecycle helpers ported from reference (rank, last-owner, sessions snapshot)
+**What I chose:** `lifecycle.js`: rank rules, last-owner guard, `endActiveSessions`, authority snapshot — routes call these instead of duplicating PERMISSIONS.md rules.
+**What I rejected:** Inlining owner-count and session-end logic in every route file.
+**What would change my mind:** None — duplication would be harder to keep consistent with D8/D9-style rules.
+---
+## Phase 4 — devices and grants
 
 ---
-
-### Org-level resolution (`deviceId === null`) includes device-scoped grants
-
-**What I chose:** When `deviceId === null`, `collectGrants` does not filter on `g.device_id`; when set, SQL adds `(g.device_id IS NULL OR g.device_id = ?)`.
-
-**Why:** Needed device-scoped allows (e.g. viewer `session:start` on `dev_lab_mac_01` only) to affect per-device checks while org-level effective sets still reflect grants attached to specific devices (nav union). Device list batching in `resolveDevices` loads all grants once and filters per device in JS — same rule as `resolve`, one implementation via `buildPermissions` (`server/permissions.js`).
-
-**What I rejected:** Org-level resolve using only `device_id IS NULL` grants — would ignore per-device allows/denies and break row-level behaviour tied to seed grants in `seed/orgs.json`.
-
-**What would change my mind:** A spec test that org-level `device:view` ignores device-scoped denies; I did not see one in the public checker.
+## Phase 5 — sessions
 
 ---
-
-### One function (`buildPermissions`) is the only allow/deny combiner
-
-**What I chose:** Shared `buildPermissions({ catalogue, role, baseline, grants })` called from both `resolve` and `resolveDevices`.
-
-**Why:** Avoids duplicating D1/D4 logic in list endpoints vs single checks — README explicitly warns against two engines drifting. Wildcard expansion and deny/allow passes live in one place.
-
-**What I rejected:** Calling `resolve(db, { …, deviceId })` inside a loop over devices — correct but N+1 queries per list page.
-
-**What would change my mind:** Profiling showing in-memory filter cost dominates; would still keep one combiner, only change data loading.
+## Phase 6 — audit (read path + denial logging)
 
 ---
-
-### Permission catalogue and baselines come from the database at runtime
-
-**What I chose:** `loadCatalogue` → `SELECT key FROM permissions`; `loadBaseline` → `role_permissions` for the membership role. No copied 19×5 matrix in code.
-
-**Why:** `permissions.js` header and `scripts/check-personalisation.js` state personalised DBs add permissions/roles not in the prose. Hardcoding would pass `check-permissions.js` but fail personalisation floor.
-
-**What I rejected:** Embedding PERMISSIONS.md table as a JS constant.
-
-**What would change my mind:** If grading only used fixed reference DB with no overlay — still a bad idea given personalisation script in repo.
-
----
-
-### Grant time windows use half-open intervals in SQL
-
-**What I chose:** Active when `revoked_at IS NULL`, `(starts_at IS NULL OR starts_at <= at)`, `(expires_at IS NULL OR expires_at > at)` with `at = now.toISOString()`.
-
-**Why:** `check-permissions.js` sections `expired grant is inert` and `not-yet-started grant is inert` failed until expiry used `>` not `>=` (D7: `expires_at == now` is expired).
-
-**What I rejected:** Treating `expires_at === now` as still active.
-
-**What would change my mind:** Schema or tests using inclusive end — contradicts PERMISSIONS.md D7.
-
----
-
-### Session start failures distinguish missing `session:start` from missing mode permission
-
-**What I chose:** `assertCanStartSession` calls `assertCan(..., 'session:start', deviceId)` first, then checks `MODE_PERMISSION[mode]` separately and throws `missing_device_permission` for the second failure.
-
-**Why:** `check-permissions.js` §9 expects `missing_permission` on `qa-android-01` (no start grant) and `missing_device_permission` on `lab-mac-01` for control (has start, lacks `device:control`). Reversing order or merging checks would collapse reason codes.
-
-**What I rejected:** Single combined check like "can start view session" without two steps.
-
-**What would change my mind:** API spec requiring one reason for all session start denials — contradicts shipped tests.
-
----
-
-### HTTP denials use `forbidden()` from `http.js` so `error.reason` is set
-
-**What I chose:** Import `forbidden` and throw it from `assertCan`, `assertMayGrant`, and `assertCanStartSession`.
-
-**Why:** With 33/35 passing, failures were `got undefined want "missing_device_permission"`. Missing import caused `ReferenceError` without `.reason`. After `import { forbidden } from './http.js'`, terminal output showed 35/0 pass (`BUILD-LOG.md` Phase 2 assertCan entry).
-
-**What I rejected:** Throwing plain `Error('FORBIDDEN')` without reason field.
-
-**What would change my mind:** Tests reading `e.code` only — they read `e.reason` in `check-permissions.js`.
-
----
-
-### Wildcard grant patterns expand against the live catalogue
-
-**What I chose:** `expand(pattern, catalogue)` handles `*`, `prefix:*`, and exact keys; deny/allow loops iterate expanded keys only.
-
-**Why:** Tests `device:* allows device:control` and `device:* does NOT allow session:start` / `audit:read` — wildcard must not imply other resources (D5).
-
-**What I rejected:** Treating `device:*` as "all permissions" or implying `session:*`.
-
-**What would change my mind:** A test that `device:*` grants `session:start`.
-
----
-
-## Where this repo argues with itself
-
-**Org-level "union" wording vs how grants are collected.** PERMISSIONS.md §3 describes org-level as a union across devices; it does not spell out SQL. A plausible reading is "only org-wide grants at org-level," which differs from including device-scoped rows when `deviceId === null`. I built the latter so device-scoped seed grants behave consistently and match `q1-starter`/public checker behaviour (all grants when org-level, filter when per-device). If hidden tests used the narrower reading, I would need to revisit — `check-personalisation.js` and device row tests are the evidence I used.
-
-_(Add more contradictions here only if you actually hit them — e.g. foreign_keys pragma, invite docs — with quotes.)_
-
+## Phase 7–8 — console and hardening
 ---
 
 ## Deliberately not built
-
-- **Caching resolved permissions** — D7 and PERMISSIONS.md say expired grants must drop on the next request; no TTL cache in `permissions.js`.
-- **Using `roles.rank` in the resolution engine** — rank is for "who may modify whom" (D8), not for `can()`; kept out of `buildPermissions`.
-- **API routes, console, audit writers** — not implemented yet; engine ready for `GET …/effective` and device list when routes call `resolve` / `resolveDevices`.
+- **Permission resolution cache** — grants expire per request (D7); no TTL in `permissions.js`.
+- **`roles.rank` inside `can()`** — rank is for who may change whom (D8), not effective permissions.
+- **Most HTTP routes + `web/`** — only `auth` registered in `server/routes/index.js` so far.
+- **Production `auditDenials` wrapper** — not wired for all gated routes until try/catch + `err.reason` matches q1 (`check-api.js` denial audit).
+- **Copy entire q1 tree** — q1 as reference; `starter/` built incrementally with scripts as gate.
