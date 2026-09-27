@@ -128,7 +128,7 @@ judgement. An unmentioned gap is a gap.
 **What I rejected:** Plain `Error` without `.reason`.
 **What would change my mind:** Suite reading only `e.code`, not `e.reason`.
 ---
-## Phase 3 — orgs, members, invites, audit shape (in progress)
+## Phase 3 — orgs, members, invites, audit
 ### Audit successful login and failed password when org context exists
 **What I chose:** `routes/auth.js` calls `audit()` on good login and on bad password when user + active membership exist (`org_id` set on rows).
 **Why:** Minimal audit before full API; matches need for attributable auth events (`BUILD-LOG.md` 2026-09-27).
@@ -140,11 +140,62 @@ judgement. An unmentioned gap is a gap.
 **What I rejected:** Inlining owner-count and session-end logic in every route file.
 **What would change my mind:** None — duplication would be harder to keep consistent with D8/D9-style rules.
 ---
+### Member role change bumps `perm_version` but does not end sessions
+**What I chose:** `PATCH .../members/:userId` calls `bumpPermVersion` only; no `endActiveSessions`.
+**Why:** `check-api.js` §7.1 — Sam demoted to viewer while control session on `dev_lab_win_01` stays `active` with `end_reason` null; new session blocked and stale token `TOKEN_STALE`.
+**What I rejected:** Ending sessions on role change (would fail grandfathering test).
+**What would change my mind:** Spec requiring immediate session termination on role change.
+---
+### Audit pagination rejects out-of-range query params (no clamping)
+**What I chose:** `limit` must be integer 1–200; `offset` non-negative integer; `limit=0`, `limit=99999`, `offset=-1` → 400.
+**Why:** `check-api.js` lines 188–191 — `offset=99999` returns 200 with empty slice, not an error.
+**What I rejected:** Clamping `limit=99999` to 200 (would hide client bugs).
+**What would change my mind:** API contract explicitly specifying clamp behaviour.
+---
+### Invite peek is org-name only; accept is atomic single-use
+**What I chose:** Public GET returns `orgName` not `orgId`; accept claims row with `UPDATE ... WHERE accepted_at IS NULL`, 409 on reuse.
+**Why:** `check-api.js` invites block — no `org_acme` or `lab-mac` in peek JSON; second accept → 409.
+**What I rejected:** Returning org id on peek for “convenience” (leaks tenancy to unauthenticated holder).
+**What would change my mind:** Product requirement for org branding that needs stable org id pre-login (would still avoid device lists).
+---
 ## Phase 4 — devices and grants
-
+### Device list excludes rows without `device:view`, does not redact
+**What I chose:** After `resolveDevices`, skip devices where `permissions['device:view'].effect !== 'allow'`; list length shrinks (viewer sees 4 devices, not 5 with hidden fields).
+**Why:** `check-api.js` §2 — `kiosk-lobby-01 is ABSENT (not redacted)` for Acme viewer.
+**What I rejected:** Returning all devices with `name: null` or a `visible: false` flag (forbidden vs invisible semantics differ).
+**What would change my mind:** Shipped test expecting redacted placeholders in the list.
+---
+### Unknown grant permissions: FK error mapped to 400, not a JS catalogue check only
+**What I chose:** Insert `grant_permissions` inside a transaction; on SQLite `FOREIGNKEY` failure throw `badRequest(..., 'unknown_permission')`.
+**Why:** `check-api.js` D19 — `device:teleport` → 400 with `reason unknown_permission`; README Phase 0 showed FK only fires with `foreign_keys=ON`.
+**What I rejected:** Pre-validating only against a hardcoded permission list (breaks `check-personalisation.js` / DB-driven catalogue).
+**What would change my mind:** Removing FK and requiring app-only validation with a test that adds patterns at runtime without migration.
+---
+### Grant validation order: 404 invisibility before `assertMayGrant`, FK after
+**What I chose:** Unknown member or cross-org `deviceId` → 404; then `assertMayGrant`; then insert + FK for permission strings.
+**Why:** PERMISSIONS.md §6 / q1 comment — do not turn cross-tenant probes into 403; D19 still needs FK for unknown pattern names.
+**What I rejected:** Running `assertMayGrant` before membership lookup (would leak “not allowed to grant” for non-members).
+**What would change my mind:** Explicit spec that non-member grant target returns 403.
+---
+### Device list rows include resolved permissions for the caller
+**What I chose:** Each device in `GET /orgs/:org/devices` includes full `permissions` map from `resolveDevices` (batch, not N× `resolve`).
+**Why:** Globex desk vs kiosk control effects in `check-api.js` §7.4; aligns with §8.2 “server is source of truth for UI state”.
+**What I rejected:** List endpoint returning device metadata only with a second round-trip per row.
+**What would change my mind:** Performance contract capping list payload size without permissions (none in brief).
 ---
 ## Phase 5 — sessions
 
+### Session start checks `session:start` before mode permission
+**What I chose:** `assertCanStartSession` in `permissions.js` orders checks so missing `session:start` vs missing `device:control` produce different `error.reason` values.
+**Why:** `check-api.js` §9 — qa-android view → `missing_permission`; control on lab-mac → `missing_device_permission`.
+**What I rejected:** Single combined “cannot start session” reason.
+**What would change my mind:** Spec collapsing reasons for clients that ignore `reason`.
+---
+### Exclusive control via DB constraint, not application lock
+**What I chose:** Rely on partial unique index on active control/terminal sessions; catch `SQLITE_CONSTRAINT` → 409 `DEVICE_BUSY`.
+**Why:** `check-api.js` D10 — second control on same device 409; concurrent view 201.
+**What I rejected:** `SELECT` then `INSERT` race in JS only.
+**What would change my mind:** SQLite without the index (would add explicit transactional locking).
 ---
 ## Phase 6 — audit (read path + denial logging)
 
@@ -155,6 +206,6 @@ judgement. An unmentioned gap is a gap.
 ## Deliberately not built
 - **Permission resolution cache** — grants expire per request (D7); no TTL in `permissions.js`.
 - **`roles.rank` inside `can()`** — rank is for who may change whom (D8), not effective permissions.
-- **Most HTTP routes + `web/`** — only `auth` registered in `server/routes/index.js` so far.
-- **Production `auditDenials` wrapper** — not wired for all gated routes until try/catch + `err.reason` matches q1 (`check-api.js` denial audit).
+- **`web/` console** — API core complete for `check-api.js`; UI phases remain.
 - **Copy entire q1 tree** — q1 as reference; `starter/` built incrementally with scripts as gate.
+- **Re-returning invite raw token** — by design one-time on create; no recovery endpoint.

@@ -96,28 +96,66 @@ Changed plan: allow `suspended` through authenticate; call `assertFresh` only wh
 _Anything you had to work out that no document states. Invite lifecycle states are a common
 source of this._
 
-## 2026-09-27 Phase 3 - audit(minimal)+auth routes
-Implemented audit() and auditDenials() both. 
--> `server/routes/auth.js` calls `audit` on successful login and on bad password when
-user + an active membership exist (`org_id` NOT NULL on audit rows).
--> now auditDenials() run some permission gated code. if it thorws forbidden call audit() with result:deny and rethrow. Successful allows are not logged in here.
+## 2026-09-27 · Phase 3 — audit + auth routes (prerequisite)
+Implemented `audit()` and `auditDenials()`. `routes/auth.js` logs successful login and failed
+password when the user has an active membership (`org_id` on the row). `auditDenials` wraps
+permission-gated handlers: `FORBIDDEN` → one `deny` row with `reason_code` from `err.reason`,
+then rethrow. Allows inside the wrapper are not double-logged.
 
-## Phase 3- Lifecycle.js
-Ported rank / last-owner / `endActiveSessions` / `snapshotAuthority` / `sessionExpiry` from
-reference so member and session routes do not duplicate PERMISSIONS.md
-Leaned on DB: owner count query for last-owner; session rows updated in place with
-`state='ended'` + `end_reason`.
+## 2026-09-27 · Phase 3a — lifecycle.js
+Ported `roleRanks`, `assertRoleExists`, `assertCanModify`, `assertNotLastOwner`,
+`endActiveSessions`, `snapshotAuthority`, `sessionExpiry` from q1 reference. Used only for
+**modification authority** and tenancy cascades — never inside `can()` / `resolve()`.
 
+## 2026-09-27 · Phase 3b — routes/orgs.js
+Org CRUD, members (list / PATCH role / suspend / remove / `DELETE .../members/me`), effective
+permissions (`resolve` with optional `deviceId`), audit list with strict pagination (400 outside
+1–200 limit or negative offset — not clamped). Route order: `/members/me` before
+`/members/:userId`. Role PATCH bumps `perm_version` but does **not** call `endActiveSessions`
+(grandfathering §7.1). Suspend/remove do end sessions (`user_suspended`, `membership_removed`).
+
+## 2026-09-27 · Phase 3c — routes/invites.js
+Authenticated create/list/revoke; public `GET /invites/:token` and `POST .../accept`. Raw token
+returned once; DB stores `hashInviteToken(raw)` only. Peek body: `email`, `role`, `orgName`,
+`expiresAt` — no `org_id`, no device names. Accept uses `UPDATE ... WHERE accepted_at IS NULL`
+for single-use (409 on reuse). Existing platform user by email gets membership attached, not a
+second user row. Surprise: inviting an email that already has a user row pre-creates
+`memberships.status='invited'` so the people list has one source of truth before accept.
+
+## 2026-09-27 · Phase 3 wiring — routes/index.js
+Registration order: auth → orgs → invites → devices → sessions. Order matters only where paths
+could overlap; invites are under `/orgs/:org/invites` and public `/invites/:token`.
 
 ## Phase 4 — devices and grants
 
 _What happens at the boundary where two grants disagree, or where a grant's scope and the
 question's scope differ? Say what you predicted and what you got._
 
+## 2026-09-27 · Phase 4 — routes/devices.js (devices + grants)
+`GET /orgs/:org/devices`: `device:list` on the endpoint; per row `resolveDevices` then **omit**
+the row if `device:view` is not `allow` (kiosk absent for Acme viewer — not redacted). Each
+included row ships full `permissions` for the caller on that device (UI reads `data-state` from
+API, §8.2). Grant POST: validate member/device existence (404 invisible), then `assertMayGrant`
+(D9), then insert; FK on `grant_permissions` → catch `FOREIGNKEY` → 400 `unknown_permission`
+(D19). Empty `permissions` array → 400 before DB. Self-grant → 403 `FORBIDDEN`. Revoke bumps
+`perm_version` only — no session kill (grandfathering).
+
+## 2026-09-27 · check-api.js (end-to-end)
+`node scripts/check-api.js` — **66/66 ALL PASS** after devices + invites + orgs. Sessions
+(`routes/sessions.js`) were required by the same script (§9 compound check, D10 busy, §7.1–7.2);
+implemented in the same pass so the public suite stays green.
+
 ## Phase 5 — sessions
 
 _Two permissions, one device. What did you have to resolve, and in what order, to keep the two
 failure reasons distinguishable?_
+
+## 2026-09-27 · Phase 5 — routes/sessions.js (with check-api)
+`assertCanStartSession` already in `permissions.js`: check `session:start` first, then mode
+permission — so `missing_permission` vs `missing_device_permission` stay distinct (§9).
+Exclusive control/terminal enforced by partial unique index → 409 `DEVICE_BUSY`; view sessions
+are concurrent. `snapshotAuthority` stored on INSERT for grandfathered authority. Lazy
+`sweepExpired` before reads.
 
 ## Phase 6 — audit
 
